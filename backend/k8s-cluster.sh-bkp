@@ -1,0 +1,64 @@
+#!/bin/bash
+
+
+MASTER_IP=$1
+WORKER_IPS=$2
+echo "🚀 Starting Kubernetes Cluster Setup"
+
+echo "MASTER_IP: $MASTER_IP"
+echo "WORKER_IPS: $WORKER_IPS"
+echo "⏳ Waiting for EC2 instances to be ready..."
+sleep 60
+
+setup_node() {
+  NODE=$1
+
+  ssh -o /app/key.pem StrictHostKeyChecking=no ec2-user@$NODE << 'EOF'
+  sudo yum update -y
+  sudo yum install -y docker
+  sudo systemctl start docker
+  sudo systemctl enable docker
+  sudo swapoff -a
+
+  cat <<EOT | sudo tee /etc/yum.repos.d/kubernetes.repo
+[kubernetes]
+name=Kubernetes
+baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+enabled=1
+gpgcheck=0
+EOT
+
+  sudo yum install -y kubelet kubeadm kubectl
+  sudo systemctl enable kubelet
+  sudo systemctl start kubelet
+EOF
+}
+
+setup_node $MASTER_IP
+
+IFS=',' read -ra WORKERS <<< "$WORKER_IPS"
+for ip in "${WORKERS[@]}"; do
+  setup_node $ip
+done
+
+ssh ec2-user@$MASTER_IP << 'EOF'
+sudo kubeadm init --pod-network-cidr=10.244.0.0/16 > join.sh
+
+mkdir -p $HOME/.kube
+sudo cp /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+
+kubeadm token create --print-join-command >> join.sh
+EOF
+
+scp -i /app/key.pem ec2-user@$MASTER_IP:join.sh ./join.sh
+
+JOIN_CMD=$(tail -n 1 join.sh)
+
+for ip in "${WORKERS[@]}"; do
+  ssh ec2-user@$ip "sudo $JOIN_CMD"
+done
+
+echo "Cluster Ready"
