@@ -1,0 +1,85 @@
+from fastapi import FastAPI
+from datetime import datetime
+import subprocess
+
+from models import ClusterRequest
+from database import clusters_collection
+from aws import create_instance
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI()
+
+# ✅ CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.post("/create-cluster")
+def create_cluster(req: ClusterRequest):
+    print("🚀 Request:", req)
+
+    try:
+        # Create master
+        master = create_instance(
+            req.instanceType,
+            f"{req.clusterName}-master",
+            req.region
+        )
+
+        # Create workers
+        workers = []
+        for i in range(req.workers):
+            w = create_instance(
+                req.instanceType,
+                f"{req.clusterName}-worker-{i+1}",
+                req.region
+            )
+            workers.append(w)
+
+        # Run K8s setup script
+        worker_ips = ",".join([w["public_ip"] for w in workers])
+
+        result = subprocess.run(
+            ["bash", "k8s-cluster.sh", master["public_ip"], worker_ips],
+            capture_output=True,
+            text=True
+        )
+
+        print("========== SCRIPT STDOUT ==========")
+        print(result.stdout)
+
+        print("========== SCRIPT STDERR ==========")
+        print(result.stderr)
+
+        # ✅ Save to DB
+        clusters_collection.insert_one({
+            "clusterName": req.clusterName,
+            "master": master,
+            "workers": workers,
+            "status": "running",
+            "logs": result.stdout,
+            "errors": result.stderr,
+            "createdAt": datetime.utcnow()
+        })
+
+        return {
+            "status": "success",
+            "master": master,
+            "workers": workers,
+            "logs": result.stdout,
+            "errors": result.stderr
+        }
+
+    except Exception as e:
+        print("❌ ERROR:", str(e))
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/clusters")
+def get_clusters():
+    return list(clusters_collection.find({}, {"_id": 0}))
