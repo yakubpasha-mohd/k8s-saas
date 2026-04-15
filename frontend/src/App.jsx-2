@@ -1,0 +1,128 @@
+import { useState } from "react";
+
+export default function App() {
+  const [loading, setLoading] = useState(false);
+  const [logs, setLogs] = useState("");
+
+  const [form, setForm] = useState({
+    clusterName: "",
+    workers: 1,
+    instanceType: "t2.medium",
+    k8sVersion: "1.29",
+    region: "us-east-1",
+    deployApp: false,
+  });
+
+  const handleChange = (e) => {
+    const { name, value, type, checked } = e.target;
+
+    setForm({
+      ...form,
+      [name]:
+        type === "checkbox"
+          ? checked
+          : name === "workers"
+          ? Number(value)
+          : value,
+    });
+  };
+
+  const validateForm = () => {
+    if (!form.clusterName.trim()) return "Cluster name is required";
+    if (!/^[a-z0-9-]+$/.test(form.clusterName))
+      return "Use lowercase letters, numbers, hyphens only";
+    if (form.workers < 1) return "Minimum 1 worker required";
+    return null;
+  };
+
+  const createCluster = async () => {
+    const err = validateForm();
+    if (err) {
+      setLogs("❌ " + err);
+      return;
+    }
+
+    setLoading(true);
+    setLogs("🚀 Creating cluster...\n");
+
+    try {
+      const res = await fetch("http://34.204.82.138:8000/create-cluster", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+
+      const data = await res.json();
+
+      if (data.logs) {
+        setLogs((prev) => prev + "\n" + data.logs);
+      }
+
+      if (data.errors) {
+        setLogs((prev) => prev + "\n❌ Errors:\n" + data.errors);
+      }
+
+    } catch (err) {
+      setLogs("❌ Request failed: " + err.message);
+    }
+
+    setLoading(false);
+  };
+
+  return (
+    <div style={{ padding: 40 }}>
+      <h1>🚀 K8s SaaS Dashboard</h1>
+
+      <input
+        name="clusterName"
+        placeholder="Cluster Name"
+        onChange={handleChange}
+      />
+      <br /><br />
+
+      <input
+        type="number"
+        name="workers"
+        value={form.workers}
+        onChange={handleChange}
+      />
+      <br /><br />
+
+      <select name="instanceType" onChange={handleChange}>
+        <option>t2.micro</option>
+        <option>t2.medium</option>
+      </select>
+
+      <br /><br />
+
+      <label>
+        <input
+          type="checkbox"
+          name="deployApp"
+          onChange={handleChange}
+        />
+        Deploy sample app
+      </label>
+
+      <br /><br />
+
+      <button onClick={createCluster} disabled={loading}>
+        {loading ? "Creating..." : "Create Cluster"}
+      </button>
+
+      <h3>📜 Logs</h3>
+      <textarea
+        value={logs}
+        readOnly
+        rows={20}
+        style={{
+          width: "100%",
+          background: "black",
+          color: "lime",
+          padding: "10px",
+          fontFamily: "monospace",
+        }}
+      />
+    </div>
+  );
+}
