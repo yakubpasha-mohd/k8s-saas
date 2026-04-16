@@ -13,23 +13,19 @@ services:
     depends_on:
       - mongo
     volumes:
+      - ./backend:/app
       - ./backend/key.pem:/app/key.pem
-    restart: always
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile   # ✅ production Dockerfile (nginx)
+    build: ./frontend
     container_name: k8s-frontend
     ports:
-      - "3000:80"
+      - "5173:5173"
     depends_on:
       - backend
-    restart: always
 
   mongo:
     image: mongo:7
     container_name: k8s-mongo
     ports:
       - "27017:27017"
-    restart: always
