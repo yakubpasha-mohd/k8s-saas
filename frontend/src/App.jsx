@@ -23,9 +23,6 @@ export default function App() {
     });
   };
 
-  // =========================
-  // CREATE CLUSTER
-  // =========================
   const createCluster = async () => {
     setLoading(true);
     setLogs("🚀 Creating cluster...\n");
@@ -33,14 +30,12 @@ export default function App() {
     try {
       const payload = {
         clusterName: form.clusterName,
-        workers: Number(form.workers), // ✅ important fix
+        workers: Number(form.workers),
         instanceType: form.instanceType,
         region: form.region,
-	k8sVersion: "1.29", 
-	deployApp: false
+        k8sVersion: "1.29",
+        deployApp: false,
       };
-
-      console.log("📦 Payload:", payload);
 
       const res = await fetch(`${API}/create-cluster`, {
         method: "POST",
@@ -52,148 +47,133 @@ export default function App() {
 
       const data = await res.json();
 
-      console.log("📥 Response:", data);
-
       if (data.status === "success") {
         setLogs(data.logs || "✅ Cluster created successfully");
-
-        // ✅ store master IP automatically
         setMasterIp(data.master.public_ip);
       } else {
         setLogs("❌ " + JSON.stringify(data));
       }
     } catch (err) {
-      setLogs("❌ Request failed: " + err.message);
+      setLogs("❌ " + err.message);
     }
 
     setLoading(false);
   };
 
-  // =========================
-  // GET STATUS
-  // =========================
   const getStatus = async () => {
-    if (!masterIp) {
-      alert("⚠️ Create cluster first!");
-      return;
-    }
+    if (!masterIp) return alert("Create cluster first");
 
     const res = await fetch(`${API}/cluster-status/${masterIp}`);
     const data = await res.json();
 
-    setStatus(`
-NODES:
-${data.nodes}
-
-PODS:
-${data.pods}
-    `);
+    setStatus(`NODES:\n${data.nodes}\n\nPODS:\n${data.pods}`);
   };
 
-  // =========================
-  // DOWNLOAD KUBECONFIG
-  // =========================
   const downloadConfig = () => {
-    if (!masterIp) {
-      alert("⚠️ Create cluster first!");
-      return;
-    }
-
+    if (!masterIp) return alert("Create cluster first");
     window.open(`${API}/download-kubeconfig/${masterIp}`);
   };
 
-  // =========================
-  // DELETE CLUSTER
-  // =========================
   const deleteCluster = async () => {
-    if (!form.clusterName) {
-      alert("Enter cluster name");
-      return;
-    }
+    if (!form.clusterName) return alert("Enter cluster name");
 
     await fetch(`${API}/delete-cluster/${form.clusterName}`, {
       method: "DELETE",
     });
 
-    alert("🗑️ Cluster Deleted");
+    alert("Deleted");
   };
 
   return (
-    <div style={{ padding: 30 }}>
-      <h1>🚀 K8s SaaS Dashboard</h1>
+    <div className="min-h-screen bg-gray-50 p-6 flex justify-center">
+      <div className="w-full max-w-4xl space-y-6">
 
-      {/* FORM */}
-      <input
-        name="clusterName"
-        placeholder="Cluster Name"
-        onChange={handleChange}
-      />
-      <br /><br />
+        <h1 className="text-3xl font-bold">
+          🚀 K8s SaaS Dashboard
+        </h1>
 
-      <input
-        name="workers"
-        type="number"
-        value={form.workers}
-        onChange={handleChange}
-      />
-      <br /><br />
+        {/* FORM */}
+        <div className="bg-white shadow rounded-2xl p-6 grid gap-4">
+          <input
+            name="clusterName"
+            placeholder="Cluster Name"
+            onChange={handleChange}
+            className="border rounded-xl px-3 py-2"
+          />
 
-      <select name="instanceType" onChange={handleChange}>
-        <option value="t2.micro">t2.micro</option>
-        <option value="t2.medium">t2.medium</option>
-      </select>
-      <br /><br />
+          <input
+            name="workers"
+            type="number"
+            value={form.workers}
+            onChange={handleChange}
+            className="border rounded-xl px-3 py-2"
+          />
 
-      <select name="region" onChange={handleChange}>
-        <option value="us-east-1">us-east-1</option>
-        <option value="us-west-2">us-west-2</option>
-      </select>
+          <select
+            name="instanceType"
+            onChange={handleChange}
+            className="border rounded-xl px-3 py-2"
+          >
+            <option value="t2.micro">t2.micro</option>
+            <option value="t2.medium">t2.medium</option>
+          </select>
 
-      <br /><br />
+          <select
+            name="region"
+            onChange={handleChange}
+            className="border rounded-xl px-3 py-2"
+          >
+            <option value="us-east-1">us-east-1</option>
+            <option value="us-west-2">us-west-2</option>
+          </select>
+        </div>
 
-      {/* ACTION BUTTONS */}
-      <button onClick={createCluster} disabled={loading}>
-        {loading ? "Creating..." : "Create Cluster"}
-      </button>
+        {/* BUTTONS */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <button
+            onClick={createCluster}
+            className="bg-blue-600 text-white py-2 rounded-xl"
+          >
+            {loading ? "Creating..." : "Create"}
+          </button>
 
-      <br /><br />
+          <button
+            onClick={getStatus}
+            className="bg-indigo-500 text-white py-2 rounded-xl"
+          >
+            Status
+          </button>
 
-      <button onClick={getStatus}>📊 Get Status</button>
-      <button onClick={downloadConfig}>⬇️ Download kubeconfig</button>
-      <button onClick={deleteCluster}>🗑️ Delete Cluster</button>
+          <button
+            onClick={downloadConfig}
+            className="bg-green-500 text-white py-2 rounded-xl"
+          >
+            Kubeconfig
+          </button>
 
-      <br /><br />
+          <button
+            onClick={deleteCluster}
+            className="bg-red-500 text-white py-2 rounded-xl"
+          >
+            Delete
+          </button>
+        </div>
 
-      {/* SHOW MASTER IP */}
-      {masterIp && (
-        <p>
-          🌐 Master IP: <b>{masterIp}</b>
-        </p>
-      )}
+        {/* LOGS */}
+        <textarea
+          value={logs}
+          readOnly
+          className="w-full h-40 bg-black text-green-400 p-3 rounded-xl"
+        />
 
-      {/* LOGS */}
-      <h3>📜 Logs</h3>
-      <textarea
-        value={logs}
-        readOnly
-        rows={15}
-        style={{
-          width: "100%",
-          background: "black",
-          color: "lime",
-          padding: "10px",
-          fontFamily: "monospace",
-        }}
-      />
+        {/* STATUS */}
+        <textarea
+          value={status}
+          readOnly
+          className="w-full h-40 border p-3 rounded-xl"
+        />
 
-      {/* STATUS */}
-      <h3>📊 Cluster Status</h3>
-      <textarea
-        value={status}
-        readOnly
-        rows={15}
-        style={{ width: "100%" }}
-      />
+      </div>
     </div>
   );
 }
