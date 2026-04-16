@@ -13,6 +13,7 @@ Purpose:
 
 Package backend, frontend, and MongoDB into isolated containers
 Enable running the entire application stack with a single command
+
 🐍 2. Backend Stack
 
 Technologies:
@@ -29,6 +30,7 @@ Manages AWS integrations
 Runtime Environment:
 
 Runs inside the backend container (Docker)
+
 🎨 3. Frontend Stack
 
 Technologies:
@@ -45,6 +47,7 @@ Communicates with backend via HTTP APIs
 Runtime Environment:
 
 Runs inside the frontend container (Docker)
+
 🗄 4. Database
 
 Technology:
@@ -58,6 +61,7 @@ Stores application data
 Runtime Environment:
 
 Runs inside the mongodb container
+
 ☁️ 5. Cloud Layer
 
 Technologies:
@@ -68,6 +72,7 @@ Amazon Web Services (AWS)
 Purpose:
 
 Hosts and deploys the entire system
+
 🔐 6. AWS SDK / Integration
 
 Technology:
@@ -91,4 +96,5 @@ AWS credentials
 Database configuration
 API keys
 ⚙️ Running the Project
+
 docker-compose up --build
