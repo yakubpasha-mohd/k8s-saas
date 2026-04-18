@@ -328,6 +328,39 @@ def join_worker(
 
 
 # ==========================================================
+# HEALTH CHECK
+# ==========================================================
+def nodes_ready(
+    ip,
+    expected
+):
+    for _ in range(60):
+        r = ssh(
+            ip,
+            "kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes --no-headers"
+        )
+
+        if r.returncode == 0:
+            lines = [
+                x for x in r.stdout.splitlines()
+                if x.strip()
+            ]
+
+            ready = 0
+
+            for line in lines:
+                if " Ready " in f" {line} ":
+                    ready += 1
+
+            if ready >= expected:
+                return True
+
+        time.sleep(10)
+
+    return False
+
+
+# ==========================================================
 # BACKGROUND JOB
 # ==========================================================
 def provision_cluster(
@@ -433,7 +466,6 @@ def provision_cluster(
         )
 
         if not nodes_ready(
-            job_id,
             master_ip,
             req.workers + 1
         ):
@@ -556,55 +588,8 @@ def stream_logs(
 # ==========================================================
 # HEALTH
 # ==========================================================
-# ==========================================================
-# HEALTH
-# ==========================================================
-def nodes_ready(job_id, ip, expected):
-    for i in range(60):
-        cmd = """
-sudo /usr/bin/kubectl \
---kubeconfig=/etc/kubernetes/admin.conf \
-get nodes --no-headers
-"""
-
-        r = ssh(ip, cmd)
-
-        if r.returncode == 0:
-            lines = [
-                x.strip()
-                for x in r.stdout.splitlines()
-                if x.strip()
-            ]
-
-            ready = 0
-
-            for line in lines:
-                cols = line.split()
-
-                # NAME STATUS ROLES AGE VERSION
-                if len(cols) >= 2 and cols[1] == "Ready":
-                    ready += 1
-
-            log(
-                job_id,
-                f"🩺 Node readiness {ready}/{expected}"
-            )
-
-            if ready >= expected:
-                return True
-
-        else:
-            err = (
-                r.stderr.strip()
-                if r.stderr
-                else r.stdout.strip()
-            )
-
-            log(
-                job_id,
-                f"kubectl readiness check failed: {err}"
-            )
-
-        time.sleep(10)
-
-    return False
+@app.get("/health")
+def health():
+    return {
+        "status": "healthy"
+    }

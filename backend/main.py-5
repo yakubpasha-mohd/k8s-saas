@@ -1,0 +1,323 @@
+import os
+import time
+import subprocess
+from typing import List
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+from aws import create_instance
+
+app = FastAPI(title="K8s SaaS Production API")
+
+# ==========================================
+# CORS
+# ==========================================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+KEY_PATH = "/app/key.pem"
+
+
+# ==========================================
+# MODELS
+# ==========================================
+class ClusterRequest(BaseModel):
+    clusterName: str
+    workers: int
+    instanceType: str
+    region: str
+    k8sVersion: str
+    deployApp: bool
+
+
+class MultiRegionRequest(BaseModel):
+    clusterName: str
+    workers: int
+    instanceType: str
+    regions: List[str]
+    k8sVersion: str
+    deployApp: bool
+
+
+# ==========================================
+# HELPERS
+# ==========================================
+def run(cmd: str):
+    return subprocess.run(
+        cmd,
+        shell=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def ssh(ip: str, command: str):
+    cmd = f"""
+ssh -o StrictHostKeyChecking=no \
+-o ConnectTimeout=10 \
+-i {KEY_PATH} ec2-user@{ip} "{command}"
+"""
+    return run(cmd)
+
+
+def wait_for_ssh(ip: str):
+    for _ in range(30):
+        r = ssh(ip, "echo ready")
+        if r.returncode == 0:
+            return True
+        time.sleep(10)
+    return False
+
+
+def install_k8s(ip: str, version="1.29"):
+    script = f"""
+sudo swapoff -a
+sudo setenforce 0 || true
+sudo yum update -y
+sudo yum install -y docker
+sudo systemctl enable docker
+sudo systemctl start docker
+
+cat <<EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
+[kubernetes]
+name=Kubernetes
+baseurl=https://pkgs.k8s.io/core:/stable:/v{version}/rpm/
+enabled=1
+gpgcheck=0
+EOF
+
+sudo yum install -y kubelet kubeadm kubectl
+sudo systemctl enable kubelet
+sudo systemctl start kubelet
+"""
+    return ssh(ip, script)
+
+
+def init_master(ip: str):
+    cmd = """
+sudo kubeadm init --pod-network-cidr=10.244.0.0/16
+
+mkdir -p $HOME/.kube
+sudo cp /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown ec2-user:ec2-user $HOME/.kube/config
+
+kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml
+
+kubeadm token create --print-join-command
+"""
+    return ssh(ip, cmd)
+
+
+def join_worker(ip: str, join_cmd: str):
+    cmd = f"sudo {join_cmd}"
+    return ssh(ip, cmd)
+
+
+# ==========================================
+# ROOT
+# ==========================================
+@app.get("/")
+def root():
+    return {"status": "ok"}
+
+
+# ==========================================
+# SINGLE CLUSTER
+# ==========================================
+@app.post("/create-cluster")
+def create_cluster(req: ClusterRequest):
+    logs = []
+
+    try:
+        logs.append(
+            "🚀 Creating master instance..."
+        )
+
+        master = create_instance(
+            req.instanceType,
+            f"{req.clusterName}-master",
+            req.region,
+        )
+
+        logs.append(
+            f"Master IP: {master['public_ip']}"
+        )
+
+        workers = []
+
+        for i in range(req.workers):
+            logs.append(
+                f"🚀 Creating worker-{i+1}..."
+            )
+
+            worker = create_instance(
+                req.instanceType,
+                f"{req.clusterName}-worker-{i+1}",
+                req.region,
+            )
+
+            workers.append(worker)
+
+            logs.append(
+                f"Worker-{i+1}: {worker['public_ip']}"
+            )
+
+        logs.append(
+            "⏳ Waiting for SSH..."
+        )
+
+        wait_for_ssh(
+            master["public_ip"]
+        )
+
+        for w in workers:
+            wait_for_ssh(
+                w["public_ip"]
+            )
+
+        logs.append(
+            "📦 Installing Kubernetes on master..."
+        )
+
+        install_k8s(
+            master["public_ip"],
+            req.k8sVersion,
+        )
+
+        logs.append(
+            "⚙️ Initializing cluster..."
+        )
+
+        init = init_master(
+            master["public_ip"]
+        )
+
+        join_cmd = ""
+        for line in init.stdout.splitlines():
+            if "kubeadm join" in line:
+                join_cmd = line.strip()
+
+        if not join_cmd:
+            return {
+                "status": "error",
+                "logs": "\n".join(logs),
+                "error": "Join command not found",
+            }
+
+        logs.append(
+            "📦 Installing Kubernetes on workers..."
+        )
+
+        for i, w in enumerate(
+            workers
+        ):
+            install_k8s(
+                w["public_ip"],
+                req.k8sVersion,
+            )
+
+            logs.append(
+                f"🔗 Joining worker-{i+1}"
+            )
+
+            join_worker(
+                w["public_ip"],
+                join_cmd,
+            )
+
+        logs.append(
+            "✅ Cluster Ready"
+        )
+
+        return {
+            "status": "success",
+            "master": master,
+            "workers": workers,
+            "logs": "\n".join(logs),
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "logs": "\n".join(logs),
+        }
+
+
+# ==========================================
+# MULTI REGION
+# ==========================================
+@app.post("/create-multi-region")
+def create_multi_region(
+    req: MultiRegionRequest,
+):
+    clusters = {}
+
+    for region in req.regions:
+        try:
+            single = create_cluster(
+                ClusterRequest(
+                    clusterName=f"{req.clusterName}-{region}",
+                    workers=req.workers,
+                    instanceType=req.instanceType,
+                    region=region,
+                    k8sVersion=req.k8sVersion,
+                    deployApp=req.deployApp,
+                )
+            )
+
+            clusters[
+                region
+            ] = single
+
+        except Exception as e:
+            clusters[
+                region
+            ] = {
+                "status": "error",
+                "error": str(e),
+            }
+
+    return {
+        "status": "success",
+        "clusters": clusters,
+    }
+
+
+# ==========================================
+# STATUS
+# ==========================================
+@app.get("/cluster-status/{ip}")
+def cluster_status(ip: str):
+    r1 = ssh(
+        ip,
+        "kubectl get nodes --no-headers",
+    )
+
+    r2 = ssh(
+        ip,
+        "kubectl get pods -A --no-headers",
+    )
+
+    return {
+        "status": "success",
+        "nodes": r1.stdout,
+        "pods": r2.stdout,
+    }
+
+
+# ==========================================
+# HEALTH
+# ==========================================
+@app.get("/health")
+def health():
+    return {
+        "status": "healthy"
+    }
