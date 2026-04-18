@@ -1,0 +1,905 @@
+import { useEffect, useRef, useState } from "react";
+
+const API =
+  import.meta.env.VITE_API_URL ||
+  "http://34.204.82.138:8000";
+
+const REGIONS = [
+  "us-east-1",
+  "us-east-2",
+  "us-west-2",
+  "eu-west-1",
+  "eu-central-1",
+  "ap-south-1",
+  "ap-southeast-1",
+];
+
+export default function App() {
+  const [dark, setDark] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const [logs, setLogs] = useState("");
+  const [status, setStatus] = useState("");
+
+  const [jobId, setJobId] = useState("");
+  const [jobData, setJobData] = useState(null);
+
+  const [masterIp, setMasterIp] = useState("");
+
+  const streamRef = useRef(null);
+  const pollRef = useRef(null);
+
+  const [form, setForm] = useState({
+    clusterName: "",
+    workers: 1,
+    instanceType: "t3.medium",
+    region: "us-east-1",
+  });
+
+  const [selectedRegions, setSelectedRegions] = useState([
+    "us-east-1",
+    "us-east-2",
+  ]);
+
+  // ======================================================
+  // UI THEME
+  // ======================================================
+  const page = dark
+    ? "bg-slate-950 text-white"
+    : "bg-slate-100 text-slate-900";
+
+  const card = dark
+    ? "bg-slate-900 border-slate-800"
+    : "bg-white border-slate-200";
+
+  const input = dark
+    ? "bg-slate-950 border-slate-700 text-white"
+    : "bg-white border-slate-300";
+
+  // ======================================================
+  // FORM
+  // ======================================================
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+
+    setForm({
+      ...form,
+      [name]:
+        name === "workers"
+          ? Number(value)
+          : value,
+    });
+  };
+
+  const toggleRegion = (region) => {
+    if (selectedRegions.includes(region)) {
+      setSelectedRegions(
+        selectedRegions.filter(
+          (r) => r !== region
+        )
+      );
+    } else {
+      setSelectedRegions([
+        ...selectedRegions,
+        region,
+      ]);
+    }
+  };
+
+  // ======================================================
+  // SINGLE REGION
+  // ======================================================
+	const createCluster = async () => {
+  setLoading(true);
+  setLogs("");
+  setJobStatus("running");
+
+  try {
+    const res = await fetch(
+      `${API}/create-cluster`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
+        body: JSON.stringify({
+          clusterName:
+            form.clusterName,
+          workers:
+            Number(form.workers),
+          instanceType:
+            form.instanceType,
+          region:
+            form.region,
+          k8sVersion:
+            "1.29",
+          deployApp:
+            false
+        }),
+      }
+    );
+
+    const data =
+      await res.json();
+
+    if (data.jobId) {
+      startLogs(data.jobId);
+    } else {
+      setLogs(
+        "Failed to start job.\n"
+      );
+      setLoading(false);
+    }
+
+  } catch (err) {
+    setLogs(
+      "❌ " + err.message
+    );
+    setLoading(false);
+  }
+};
+  // ======================================================
+  // MULTI REGION
+  // ======================================================
+  const createMultiRegion =
+    async () => {
+      setLoading(true);
+      setLogs(
+        "🌍 Starting multi-region deployment...\n"
+      );
+
+      setJobData(null);
+      setJobId("");
+
+      try {
+        const res = await fetch(
+          `${API}/create-multi-region`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body: JSON.stringify({
+              clusterName:
+                form.clusterName,
+              workers:
+                form.workers,
+              instanceType:
+                form.instanceType,
+              regions:
+                selectedRegions,
+            }),
+          }
+        );
+
+        const data =
+          await res.json();
+
+        if (
+          data.status ===
+          "started"
+        ) {
+          setJobId(data.jobId);
+
+          startPolling(
+            data.jobId
+          );
+
+          startLogs(
+            data.jobId
+          );
+        } else {
+          setLogs(
+            JSON.stringify(
+              data,
+              null,
+              2
+            )
+          );
+
+          setLoading(false);
+        }
+      } catch (e) {
+        setLogs(
+          "❌ " + e.message
+        );
+
+        setLoading(false);
+      }
+    };
+
+  // ======================================================
+  // POLLING
+  // ======================================================
+  const startPolling = (
+    id
+  ) => {
+    if (pollRef.current) {
+      clearInterval(
+        pollRef.current
+      );
+    }
+
+    pollRef.current =
+      setInterval(
+        async () => {
+          try {
+            const res =
+              await fetch(
+                `${API}/jobs/${id}`
+              );
+
+            const data =
+              await res.json();
+
+            setJobData(
+              data
+            );
+
+            if (
+              data.status ===
+              "completed"
+            ) {
+              clearInterval(
+                pollRef.current
+              );
+
+              setLoading(
+                false
+              );
+            }
+          } catch {}
+        },
+        3000
+      );
+  };
+
+  // ======================================================
+  // LIVE LOGS
+  // ======================================================
+  const startLogs = (id) => {
+  if (streamRef.current) {
+    streamRef.current.close();
+  }
+
+  const es = new EventSource(
+    `${API}/jobs/${id}/stream`
+  );
+
+  es.onopen = () => {
+    setLogs(
+      "Connected to live log stream...\n"
+    );
+  };
+
+  es.onmessage = (event) => {
+    const line =
+      event.data?.trim();
+
+    if (!line) return;
+
+    setLogs((prev) =>
+      prev + line + "\n"
+    );
+
+    if (
+      line.includes(
+        "Cluster Ready"
+      )
+    ) {
+      setJobStatus(
+        "completed"
+      );
+      setLoading(false);
+      es.close();
+    }
+
+    if (
+      line.includes(
+        "ERROR"
+      )
+    ) {
+      setJobStatus(
+        "failed"
+      );
+      setLoading(false);
+      es.close();
+    }
+  };
+
+  es.onerror = () => {
+    setLogs((prev) =>
+      prev +
+      "Stream disconnected.\n"
+    );
+
+    setLoading(false);
+    es.close();
+  };
+
+  streamRef.current = es;
+};
+  // =====================================================
+  // STATUS
+  // ======================================================
+  const getStatus = async () => {
+    if (!masterIp) {
+      return alert(
+        "Create cluster first"
+      );
+    }
+
+    const res = await fetch(
+      `${API}/cluster-status/${masterIp}`
+    );
+
+    const data =
+      await res.json();
+
+    setStatus(`
+NODES:
+${data.nodes}
+
+PODS:
+${data.pods}
+`);
+  };
+
+  // ======================================================
+  // DOWNLOAD
+  // ======================================================
+  const downloadConfig =
+    () => {
+      if (!masterIp)
+        return alert(
+          "Create cluster first"
+        );
+
+      window.open(
+        `${API}/download-kubeconfig/${masterIp}`
+      );
+    };
+
+  // ======================================================
+  // DELETE
+  // ======================================================
+  const deleteCluster =
+    async () => {
+      if (
+        !form.clusterName
+      ) {
+        return alert(
+          "Enter cluster name"
+        );
+      }
+
+      await fetch(
+        `${API}/delete-cluster/${form.clusterName}`,
+        {
+          method:
+            "DELETE",
+        }
+      );
+
+      alert(
+        "Deleted"
+      );
+    };
+
+  // ======================================================
+  // BADGE
+  // ======================================================
+  const badge = (
+    status
+  ) => {
+    if (
+      status ===
+      "success"
+    )
+      return "bg-green-100 text-green-700";
+
+    if (
+      status ===
+      "running"
+    )
+      return "bg-blue-100 text-blue-700";
+
+    if (
+      status ===
+      "failed"
+    )
+      return "bg-red-100 text-red-700";
+
+    return "bg-slate-100 text-slate-600";
+  };
+
+  return (
+    <div
+      className={`min-h-screen ${page}`}
+    >
+      <div className="flex">
+
+        {/* SIDEBAR */}
+        <aside
+          className={`hidden lg:flex w-72 min-h-screen border-r p-6 flex-col gap-6 ${card}`}
+        >
+          <div>
+            <h1 className="text-2xl font-bold">
+              ☸ K8s SaaS
+            </h1>
+
+            <p className="text-sm opacity-70 mt-2">
+              Enterprise Platform
+            </p>
+          </div>
+
+          <nav className="space-y-2">
+            <div className="p-3 rounded-xl bg-blue-600 text-white">
+              Dashboard
+            </div>
+
+            <div className="p-3 rounded-xl">
+              Clusters
+            </div>
+
+            <div className="p-3 rounded-xl">
+              Logs
+            </div>
+
+            <div className="p-3 rounded-xl">
+              Monitoring
+            </div>
+          </nav>
+
+          <div className="mt-auto">
+            <button
+              onClick={() =>
+                setDark(!dark)
+              }
+              className="w-full px-4 py-3 rounded-xl bg-slate-700 text-white"
+            >
+              {dark
+                ? "☀ Light"
+                : "🌙 Dark"}
+            </button>
+          </div>
+        </aside>
+
+        {/* MAIN */}
+        <main className="flex-1 p-6 space-y-6">
+
+          {/* HEADER */}
+          <div
+            className={`rounded-2xl border p-6 ${card}`}
+          >
+            <h2 className="text-3xl font-bold">
+              🚀 Premium Cluster Dashboard
+            </h2>
+
+            <p className="opacity-70 mt-2">
+              Multi Region Kubernetes Provisioning with Real-Time Logs
+            </p>
+          </div>
+
+          {/* METRICS */}
+          <div className="grid md:grid-cols-4 gap-4">
+            <Metric
+              title="Progress"
+              value={`${jobData?.progress || 0}%`}
+              color="bg-purple-600"
+              card={card}
+            />
+
+            <Metric
+              title="Regions"
+              value={
+                selectedRegions.length
+              }
+              color="bg-blue-600"
+              card={card}
+            />
+
+            <Metric
+              title="Job"
+              value={
+                jobData?.status ||
+                "-"
+              }
+              color="bg-green-600"
+              card={card}
+            />
+
+            <Metric
+              title="Logs"
+              value={
+                logs
+                  .split("\n")
+                  .filter(Boolean)
+                  .length
+              }
+              color="bg-orange-600"
+              card={card}
+            />
+          </div>
+
+          {/* FORM */}
+          <div className="grid xl:grid-cols-2 gap-6">
+
+            <div
+              className={`rounded-2xl border p-6 space-y-4 ${card}`}
+            >
+              <h3 className="text-xl font-semibold">
+                Create Cluster
+              </h3>
+
+              <input
+                name="clusterName"
+                placeholder="Cluster Name"
+                onChange={
+                  handleChange
+                }
+                className={`w-full border rounded-xl px-4 py-3 ${input}`}
+              />
+
+              <input
+                name="workers"
+                type="number"
+                value={
+                  form.workers
+                }
+                onChange={
+                  handleChange
+                }
+                className={`w-full border rounded-xl px-4 py-3 ${input}`}
+              />
+
+              <select
+                name="instanceType"
+                onChange={
+                  handleChange
+                }
+                className={`w-full border rounded-xl px-4 py-3 ${input}`}
+              >
+                <option>
+                  t3.medium
+                </option>
+                <option>
+                  t3.large
+                </option>
+                <option>
+                  t2.medium
+                </option>
+              </select>
+
+              <select
+                name="region"
+                onChange={
+                  handleChange
+                }
+                className={`w-full border rounded-xl px-4 py-3 ${input}`}
+              >
+                {REGIONS.map(
+                  (
+                    r
+                  ) => (
+                    <option
+                      key={
+                        r
+                      }
+                    >
+                      {r}
+                    </option>
+                  )
+                )}
+              </select>
+
+              <div className="grid grid-cols-2 gap-4">
+                <button
+                  onClick={
+                    createCluster
+                  }
+                  className="py-3 rounded-xl bg-blue-600 text-white"
+                >
+                  Single Region
+                </button>
+
+                <button
+                  onClick={
+                    createMultiRegion
+                  }
+                  className="py-3 rounded-xl bg-purple-600 text-white"
+                >
+                  Multi Region
+                </button>
+              </div>
+            </div>
+
+            {/* REGIONS */}
+            <div
+              className={`rounded-2xl border p-6 space-y-4 ${card}`}
+            >
+              <h3 className="text-xl font-semibold">
+                Select Regions
+              </h3>
+
+              <div className="grid grid-cols-2 gap-3">
+                {REGIONS.map(
+                  (
+                    region
+                  ) => (
+                    <label
+                      key={
+                        region
+                      }
+                      className="border rounded-xl p-4 flex gap-2 items-center"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedRegions.includes(
+                          region
+                        )}
+                        onChange={() =>
+                          toggleRegion(
+                            region
+                          )
+                        }
+                      />
+
+                      {region}
+                    </label>
+                  )
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* REGION STATUS CARDS */}
+          {jobData?.regions && (
+            <div
+              className={`rounded-2xl border p-6 ${card}`}
+            >
+              <h3 className="text-xl font-semibold mb-4">
+                🌍 Region Status
+              </h3>
+
+              <div className="grid md:grid-cols-3 gap-4">
+                {Object.entries(
+                  jobData.regions
+                ).map(
+                  ([
+                    region,
+                    data,
+                  ]) => (
+                    <div
+                      key={
+                        region
+                      }
+                      className="border rounded-xl p-4"
+                    >
+                      <div className="flex justify-between">
+                        <span className="font-semibold">
+                          {region}
+                        </span>
+
+                        <span
+                          className={`text-xs px-2 py-1 rounded-full ${badge(
+                            data.status
+                          )}`}
+                        >
+                          {
+                            data.status
+                          }
+                        </span>
+                      </div>
+
+                      <div className="text-sm mt-3 space-y-1 opacity-80">
+                        <div>
+                          Attempt:{" "}
+                          {
+                            data.attempt
+                          }
+                        </div>
+
+                        <div>
+                          Master:{" "}
+                          {
+                            data.master_ip ||
+                            "-"
+                          }
+                        </div>
+
+                        <div>
+                          Workers:{" "}
+                          {
+                            data
+                              .workers
+                              ?.length ||
+                            0
+                          }
+                        </div>
+                      </div>
+                    </div>
+                  )
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ACTIONS */}
+          <div className="grid md:grid-cols-3 gap-4">
+            <button
+              onClick={
+                getStatus
+              }
+              className="py-3 rounded-xl bg-indigo-600 text-white"
+            >
+              Cluster Status
+            </button>
+
+            <button
+              onClick={
+                downloadConfig
+              }
+              className="py-3 rounded-xl bg-green-600 text-white"
+            >
+              Download Config
+            </button>
+
+            <button
+              onClick={
+                deleteCluster
+              }
+              className="py-3 rounded-xl bg-red-600 text-white"
+            >
+              Delete Cluster
+            </button>
+          </div>
+	  {/* PRIMARY / STANDBY STATUS */}
+{(form.region || selectedRegions.length > 0) && (
+  <div className="grid md:grid-cols-2 gap-4">
+
+    <div
+      className={`rounded-2xl border p-6 ${card}`}
+    >
+      <h3 className="text-xl font-semibold">
+        Primary Cluster
+      </h3>
+
+      <p className="mt-3 opacity-80">
+        Region: {form.region}
+      </p>
+
+      <p className="mt-1">
+        Status: {
+          loading
+            ? "Provisioning"
+            : jobData?.status === "completed"
+            ? "Ready"
+            : "Idle"
+        }
+      </p>
+    </div>
+
+    <div
+      className={`rounded-2xl border p-6 ${card}`}
+    >
+      <h3 className="text-xl font-semibold">
+        Standby Cluster
+      </h3>
+
+      <p className="mt-3 opacity-80">
+        Region: {
+          selectedRegions[1] ||
+          "us-east-2"
+        }
+      </p>
+
+      <p className="mt-1">
+        Status: Standby
+      </p>
+    </div>
+
+  </div>
+)}
+
+{/* DEPLOYMENT PROGRESS */}
+<div
+  className={`rounded-2xl border p-6 ${card}`}
+>
+  <h3 className="font-semibold text-lg">
+    Deployment Status
+  </h3>
+
+  <div className="mt-4">
+
+    <div className="h-3 bg-slate-300 rounded-full overflow-hidden">
+
+      <div
+        className={`h-full transition-all duration-700 ${
+          loading
+            ? "w-2/3 animate-pulse bg-blue-600"
+            : jobData?.status === "completed"
+            ? "w-full bg-green-600"
+            : jobData?.status === "failed"
+            ? "w-full bg-red-600"
+            : "w-0"
+        }`}
+      />
+
+    </div>
+
+    <p className="mt-2 text-sm opacity-70">
+      {loading
+        ? "Provisioning in progress..."
+        : jobData?.status === "completed"
+        ? "Cluster Ready"
+        : jobData?.status === "failed"
+        ? "Deployment Failed"
+        : "Idle"}
+    </p>
+
+  </div>
+</div>
+
+          {/* LOGS */}
+          <div
+            className={`rounded-2xl border p-6 ${card}`}
+          >
+            <h3 className="text-xl font-semibold mb-4">
+              📜 Live Logs
+            </h3>
+
+            <pre className="bg-black text-green-400 rounded-xl p-4 h-96 overflow-auto text-sm whitespace-pre-wrap">
+              {logs}
+            </pre>
+          </div>
+
+          {/* STATUS */}
+          <div
+            className={`rounded-2xl border p-6 ${card}`}
+          >
+            <h3 className="text-xl font-semibold mb-4">
+              📊 Cluster Status
+            </h3>
+
+            <textarea
+              rows="14"
+              value={
+                status
+              }
+              readOnly
+              className={`w-full border rounded-xl p-4 ${input}`}
+            />
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function Metric({
+  title,
+  value,
+  color,
+  card,
+}) {
+  return (
+    <div
+      className={`rounded-2xl border p-5 ${card}`}
+    >
+      <div className="text-sm opacity-70">
+        {title}
+      </div>
+
+      <div className="text-3xl font-bold mt-2">
+        {value}
+      </div>
+
+      <div
+        className={`h-1 rounded-full mt-4 ${color}`}
+      />
+    </div>
+  );
+}

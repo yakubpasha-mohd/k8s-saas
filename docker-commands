@@ -1,0 +1,65 @@
+Docker Commands for Your K8s SaaS Project
+
+Run these from your project root:
+
+~/k8s-saas
+
+(where docker-compose.yml exists)
+
+✅ 1. Stop Existing Containers
+docker-compose down
+Remove volumes too (optional clean reset)
+docker-compose down -v
+✅ 2. Build Fresh Images
+docker-compose build
+Build without cache (recommended after code changes)
+docker-compose build --no-cache
+✅ 3. Start Containers
+Detached mode (recommended)
+docker-compose up -d
+Build + start together
+docker-compose up --build -d
+✅ 4. View Running Containers
+docker ps
+✅ 5. View Logs
+All services
+docker-compose logs -f
+Backend only
+docker-compose logs -f backend
+Frontend only
+docker-compose logs -f frontend
+✅ 6. Restart Services
+All
+docker-compose restart
+Backend only
+docker-compose restart backend
+Frontend only
+docker-compose restart frontend
+✅ 7. Enter Container Shell
+Backend
+docker exec -it k8s-backend bash
+
+(If bash missing:)
+
+docker exec -it k8s-backend sh
+Frontend
+docker exec -it k8s-frontend sh
+✅ 8. Remove Everything + Rebuild Clean
+docker-compose down -v
+docker system prune -af
+docker-compose up --build -d
+🚀 Recommended Daily Workflow
+
+After updating main.py or App.jsx:
+
+docker-compose down
+docker-compose up --build -d
+🌐 Access URLs
+Service	URL
+Frontend	http://YOUR_SERVER_IP:3000
+Backend Swagger	http://YOUR_SERVER_IP:8000/docs
+🔥 Best Production Command (Your Case)
+
+Use this after code changes:
+
+docker-compose down && docker-compose up --build -d

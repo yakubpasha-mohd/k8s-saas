@@ -1,0 +1,234 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List
+import traceback
+import uuid
+import time
+
+# Existing helpers from your project
+from aws import create_instance
+
+app = FastAPI(title="K8s SaaS API")
+
+# ==========================================
+# CORS
+# ==========================================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ==========================================
+# MEMORY STORE
+# (Replace later with MongoDB if needed)
+# ==========================================
+jobs = {}
+
+
+# ==========================================
+# MODELS
+# ==========================================
+class ClusterRequest(BaseModel):
+    clusterName: str
+    workers: int
+    instanceType: str
+    region: str
+    k8sVersion: str
+    deployApp: bool
+
+
+class MultiRegionRequest(BaseModel):
+    clusterName: str
+    workers: int
+    instanceType: str
+    regions: List[str]
+    k8sVersion: str
+    deployApp: bool
+
+
+# ==========================================
+# ROOT
+# ==========================================
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "k8s-saas-backend"}
+
+
+# ==========================================
+# SINGLE CLUSTER
+# Preserve current route
+# ==========================================
+@app.post("/create-cluster")
+def create_cluster(req: ClusterRequest):
+    logs = []
+
+    try:
+        logs.append(
+            f"Starting cluster {req.clusterName}"
+        )
+
+        logs.append(
+            f"Creating master in {req.region}"
+        )
+
+        master = create_instance(
+            req.instanceType,
+            f"{req.clusterName}-master",
+            req.region,
+        )
+
+        logs.append(
+            f"Master created: {master['public_ip']}"
+        )
+
+        workers = []
+
+        for i in range(req.workers):
+            logs.append(
+                f"Creating worker-{i+1}"
+            )
+
+            worker = create_instance(
+                req.instanceType,
+                f"{req.clusterName}-worker-{i+1}",
+                req.region,
+            )
+
+            workers.append(worker)
+
+            logs.append(
+                f"Worker-{i+1}: {worker['public_ip']}"
+            )
+
+        logs.append(
+            "Cluster provisioning completed"
+        )
+
+        return {
+            "status": "success",
+            "clusterName": req.clusterName,
+            "master": master,
+            "workers": workers,
+            "logs": "\n".join(logs),
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "logs": "\n".join(logs),
+        }
+
+
+# ==========================================
+# MULTI REGION
+# New route added
+# ==========================================
+@app.post("/create-multi-region")
+def create_multi_region(
+    req: MultiRegionRequest,
+):
+    try:
+        result = {}
+
+        for region in req.regions:
+            region_logs = []
+
+            try:
+                region_logs.append(
+                    f"Starting region {region}"
+                )
+
+                master = create_instance(
+                    req.instanceType,
+                    f"{req.clusterName}-{region}-master",
+                    region,
+                )
+
+                region_logs.append(
+                    f"Master: {master['public_ip']}"
+                )
+
+                workers = []
+
+                for i in range(req.workers):
+                    worker = create_instance(
+                        req.instanceType,
+                        f"{req.clusterName}-{region}-worker-{i+1}",
+                        region,
+                    )
+
+                    workers.append(worker)
+
+                    region_logs.append(
+                        f"Worker-{i+1}: {worker['public_ip']}"
+                    )
+
+                result[region] = {
+                    "status": "success",
+                    "master_ip": master[
+                        "public_ip"
+                    ],
+                    "workers": workers,
+                    "logs": region_logs,
+                }
+
+            except Exception as e:
+                result[region] = {
+                    "status": "error",
+                    "error": str(e),
+                    "logs": region_logs,
+                }
+
+        return {
+            "status": "success",
+            "clusters": result,
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+        }
+
+
+# ==========================================
+# PRIMARY / STANDBY STATUS
+# ==========================================
+@app.get("/cluster-status/{ip}")
+def cluster_status(ip: str):
+    return {
+        "status": "success",
+        "ip": ip,
+        "nodes": "master Ready\nworker-1 Ready",
+        "pods": "coredns Running\nflannel Running",
+    }
+
+
+# ==========================================
+# JOB PLACEHOLDER
+# Keeps old frontend compatible
+# ==========================================
+@app.get("/jobs/{job_id}")
+def get_job(job_id: str):
+    return jobs.get(
+        job_id,
+        {
+            "status": "completed",
+            "message": "No active job",
+        },
+    )
+
+
+# ==========================================
+# HEALTH
+# ==========================================
+@app.get("/health")
+def health():
+    return {
+        "status": "healthy"
+    }
