@@ -1,0 +1,688 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+
+const API =
+  import.meta.env.VITE_API_URL ||
+  "http://34.204.82.138:8000";
+
+const REGIONS = [
+  "us-east-1",
+  "us-east-2",
+  "us-west-2",
+  "eu-west-1",
+  "eu-central-1",
+  "ap-south-1",
+];
+
+export default function App() {
+  const [dark, setDark] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const [page, setPage] = useState("dashboard");
+
+  const [logs, setLogs] = useState("");
+  const [status, setStatus] = useState("");
+
+  const [jobId, setJobId] = useState("");
+  const [jobData, setJobData] = useState(null);
+
+  const [masterIp, setMasterIp] = useState("");
+
+  const streamRef = useRef(null);
+  const pollRef = useRef(null);
+
+  const [form, setForm] = useState({
+    clusterName: "",
+    workers: 1,
+    instanceType: "t3.medium",
+    region: "us-east-1",
+  });
+
+  const [selectedRegions, setSelectedRegions] = useState([
+    "us-east-1",
+    "us-east-2",
+  ]);
+
+  const theme = dark
+    ? "bg-slate-950 text-white"
+    : "bg-slate-100 text-slate-900";
+
+  const card = dark
+    ? "bg-slate-900 border-slate-800"
+    : "bg-white border-slate-200";
+
+  const input = dark
+    ? "bg-slate-950 border-slate-700 text-white"
+    : "bg-white border-slate-300";
+
+  const stats = useMemo(() => {
+    const regions =
+      Object.keys(
+        jobData?.regions || {}
+      ).length;
+
+    const success =
+      Object.values(
+        jobData?.regions || {}
+      ).filter(
+        (x) =>
+          x.status ===
+          "success"
+      ).length;
+
+    const failed =
+      Object.values(
+        jobData?.regions || {}
+      ).filter(
+        (x) =>
+          x.status ===
+          "failed"
+      ).length;
+
+    return {
+      activeClusters:
+        success,
+      healthyNodes:
+        success *
+        (form.workers + 1),
+      runningPods:
+        success * 8,
+      regionsActive:
+        regions,
+      failedJobs:
+        failed,
+    };
+  }, [jobData, form.workers]);
+
+  const handleChange = (
+    e
+  ) => {
+    const {
+      name,
+      value,
+    } = e.target;
+
+    setForm({
+      ...form,
+      [name]:
+        name ===
+        "workers"
+          ? Number(
+              value
+            )
+          : value,
+    });
+  };
+
+  const toggleRegion = (
+    region
+  ) => {
+    if (
+      selectedRegions.includes(
+        region
+      )
+    ) {
+      setSelectedRegions(
+        selectedRegions.filter(
+          (r) =>
+            r !==
+            region
+        )
+      );
+    } else {
+      setSelectedRegions([
+        ...selectedRegions,
+        region,
+      ]);
+    }
+  };
+
+  const createMultiRegion =
+    async () => {
+      setLoading(true);
+      setLogs(
+        "🚀 Starting multi-region deployment...\n"
+      );
+
+      try {
+        const res =
+          await fetch(
+            `${API}/create-multi-region`,
+            {
+              method:
+                "POST",
+              headers:
+                {
+                  "Content-Type":
+                    "application/json",
+                },
+              body: JSON.stringify(
+                {
+                  clusterName:
+                    form.clusterName,
+                  workers:
+                    form.workers,
+                  instanceType:
+                    form.instanceType,
+                  regions:
+                    selectedRegions,
+                }
+              ),
+            }
+          );
+
+        const data =
+          await res.json();
+
+        if (
+          data.status ===
+          "started"
+        ) {
+          setJobId(
+            data.jobId
+          );
+          startPolling(
+            data.jobId
+          );
+          startLogs(
+            data.jobId
+          );
+        } else {
+          setLogs(
+            JSON.stringify(
+              data,
+              null,
+              2
+            )
+          );
+          setLoading(
+            false
+          );
+        }
+      } catch (
+        err
+      ) {
+        setLogs(
+          err.message
+        );
+        setLoading(
+          false
+        );
+      }
+    };
+
+  const startPolling = (
+    id
+  ) => {
+    if (
+      pollRef.current
+    )
+      clearInterval(
+        pollRef.current
+      );
+
+    pollRef.current =
+      setInterval(
+        async () => {
+          try {
+            const res =
+              await fetch(
+                `${API}/jobs/${id}`
+              );
+
+            const data =
+              await res.json();
+
+            setJobData(
+              data
+            );
+
+            if (
+              data.status ===
+              "completed"
+            ) {
+              clearInterval(
+                pollRef.current
+              );
+              setLoading(
+                false
+              );
+            }
+          } catch {}
+        },
+        3000
+      );
+  };
+
+  const startLogs = (
+    id
+  ) => {
+    if (
+      streamRef.current
+    ) {
+      streamRef.current.close();
+    }
+
+    const es =
+      new EventSource(
+        `${API}/jobs/${id}/stream`
+      );
+
+    es.onmessage = (
+      event
+    ) => {
+      try {
+        const item =
+          JSON.parse(
+            event.data
+          );
+
+        if (
+          item.message ===
+          "completed"
+        ) {
+          es.close();
+          return;
+        }
+
+        setLogs(
+          (prev) =>
+            prev +
+            item.message +
+            "\n"
+        );
+      } catch {}
+    };
+
+    streamRef.current =
+      es;
+  };
+
+  const badge = (
+    status
+  ) => {
+    if (
+      status ===
+      "success"
+    )
+      return "bg-green-100 text-green-700";
+    if (
+      status ===
+      "running"
+    )
+      return "bg-blue-100 text-blue-700";
+    if (
+      status ===
+      "failed"
+    )
+      return "bg-red-100 text-red-700";
+
+    return "bg-slate-100 text-slate-600";
+  };
+
+  const nav = [
+    [
+      "dashboard",
+      "🏠 Dashboard",
+    ],
+    [
+      "clusters",
+      "☁️ Clusters",
+    ],
+    [
+      "multi",
+      "🌍 Multi Region",
+    ],
+    [
+      "logs",
+      "📜 Logs",
+    ],
+    [
+      "monitoring",
+      "📈 Monitoring",
+    ],
+    [
+      "settings",
+      "⚙️ Settings",
+    ],
+    [
+      "account",
+      "👤 Account",
+    ],
+  ];
+
+  return (
+    <div
+      className={`min-h-screen ${theme}`}
+    >
+      <div className="flex">
+
+        {/* SIDEBAR */}
+        <aside
+          className={`hidden lg:flex w-72 min-h-screen border-r p-6 flex-col ${card}`}
+        >
+          <div>
+            <h1 className="text-2xl font-bold">
+              ☸ K8s SaaS
+            </h1>
+
+            <p className="text-sm opacity-70 mt-2">
+              Enterprise Platform
+            </p>
+          </div>
+
+          <nav className="mt-8 space-y-2">
+            {nav.map(
+              (
+                item
+              ) => (
+                <button
+                  key={
+                    item[0]
+                  }
+                  onClick={() =>
+                    setPage(
+                      item[0]
+                    )
+                  }
+                  className={`w-full text-left px-4 py-3 rounded-xl transition ${
+                    page ===
+                    item[0]
+                      ? "bg-blue-600 text-white shadow-md"
+                      : "hover:bg-slate-200 hover:text-black"
+                  }`}
+                >
+                  {
+                    item[1]
+                  }
+                </button>
+              )
+            )}
+          </nav>
+
+          <div className="mt-auto">
+            <button
+              onClick={() =>
+                setDark(
+                  !dark
+                )
+              }
+              className="w-full py-3 rounded-xl bg-slate-700 text-white shadow-md hover:scale-[1.02] transition"
+            >
+              {dark
+                ? "☀ Light"
+                : "🌙 Dark"}
+            </button>
+          </div>
+        </aside>
+
+        {/* MAIN */}
+        <main className="flex-1 p-6 space-y-6">
+
+          {/* HEADER */}
+          <div
+            className={`rounded-2xl border p-6 ${card}`}
+          >
+            <h2 className="text-3xl font-bold">
+              🚀 Premium Cluster Dashboard
+            </h2>
+
+            <p className="opacity-70 mt-2">
+              Production Kubernetes Provisioning Platform
+            </p>
+          </div>
+
+          {/* HERO STATS */}
+          <div className="grid md:grid-cols-5 gap-4">
+            <Metric
+              title="Active Clusters"
+              value={
+                stats.activeClusters
+              }
+              color="bg-blue-600"
+              card={card}
+            />
+
+            <Metric
+              title="Healthy Nodes"
+              value={
+                stats.healthyNodes
+              }
+              color="bg-green-600"
+              card={card}
+            />
+
+            <Metric
+              title="Running Pods"
+              value={
+                stats.runningPods
+              }
+              color="bg-purple-600"
+              card={card}
+            />
+
+            <Metric
+              title="Regions Active"
+              value={
+                stats.regionsActive
+              }
+              color="bg-orange-600"
+              card={card}
+            />
+
+            <Metric
+              title="Failed Jobs"
+              value={
+                stats.failedJobs
+              }
+              color="bg-red-600"
+              card={card}
+            />
+          </div>
+
+          {/* CREATE */}
+          <div className="grid xl:grid-cols-2 gap-6">
+
+            <div
+              className={`rounded-2xl border p-6 space-y-4 ${card}`}
+            >
+              <h3 className="text-xl font-semibold">
+                Create Cluster
+              </h3>
+
+              <input
+                name="clusterName"
+                placeholder="Cluster Name"
+                onChange={
+                  handleChange
+                }
+                className={`w-full border rounded-xl px-4 py-3 ${input}`}
+              />
+
+              <input
+                name="workers"
+                type="number"
+                value={
+                  form.workers
+                }
+                onChange={
+                  handleChange
+                }
+                className={`w-full border rounded-xl px-4 py-3 ${input}`}
+              />
+
+              <select
+                name="instanceType"
+                onChange={
+                  handleChange
+                }
+                className={`w-full border rounded-xl px-4 py-3 ${input}`}
+              >
+                <option>
+                  t3.medium
+                </option>
+                <option>
+                  t3.large
+                </option>
+                <option>
+                  t2.medium
+                </option>
+              </select>
+
+              <button
+                onClick={
+                  createMultiRegion
+                }
+                disabled={
+                  loading
+                }
+                className="w-full py-3 rounded-xl bg-blue-600 text-white shadow-md hover:scale-[1.01] transition font-semibold"
+              >
+                {loading
+                  ? "⏳ Deploying..."
+                  : "🚀 Create Multi Region Cluster"}
+              </button>
+            </div>
+
+            {/* REGIONS */}
+            <div
+              className={`rounded-2xl border p-6 ${card}`}
+            >
+              <h3 className="text-xl font-semibold mb-4">
+                Select Regions
+              </h3>
+
+              <div className="grid grid-cols-2 gap-3">
+                {REGIONS.map(
+                  (
+                    region
+                  ) => (
+                    <label
+                      key={
+                        region
+                      }
+                      className="border rounded-xl p-4 flex gap-2"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedRegions.includes(
+                          region
+                        )}
+                        onChange={() =>
+                          toggleRegion(
+                            region
+                          )
+                        }
+                      />
+
+                      {region}
+                    </label>
+                  )
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* REGION STATUS */}
+          {jobData?.regions && (
+            <div
+              className={`rounded-2xl border p-6 ${card}`}
+            >
+              <h3 className="text-xl font-semibold mb-4">
+                🌍 Region Status
+              </h3>
+
+              <div className="grid md:grid-cols-3 gap-4">
+                {Object.entries(
+                  jobData.regions
+                ).map(
+                  ([
+                    region,
+                    data,
+                  ]) => (
+                    <div
+                      key={
+                        region
+                      }
+                      className="border rounded-xl p-4"
+                    >
+                      <div className="flex justify-between">
+                        <span className="font-semibold">
+                          {region}
+                        </span>
+
+                        <span
+                          className={`text-xs px-2 py-1 rounded-full ${badge(
+                            data.status
+                          )}`}
+                        >
+                          {
+                            data.status
+                          }
+                        </span>
+                      </div>
+
+                      <div className="text-sm mt-3 opacity-80">
+                        Workers:{" "}
+                        {
+                          data
+                            .workers
+                            ?.length ||
+                          0
+                        }
+                      </div>
+
+                      <div className="text-sm opacity-80">
+                        Master:{" "}
+                        {data.master_ip ||
+                          "-"}
+                      </div>
+                    </div>
+                  )
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* LOGS */}
+          <div
+            className={`rounded-2xl border p-6 ${card}`}
+          >
+            <h3 className="text-xl font-semibold mb-4">
+              📜 Live Logs
+            </h3>
+
+            <pre className="bg-black text-green-400 rounded-xl p-4 h-96 overflow-auto text-sm whitespace-pre-wrap">
+              {logs}
+            </pre>
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function Metric({
+  title,
+  value,
+  color,
+  card,
+}) {
+  return (
+    <div
+      className={`rounded-2xl border p-5 shadow-sm ${card}`}
+    >
+      <div className="text-sm opacity-70">
+        {title}
+      </div>
+
+      <div className="text-3xl font-bold mt-2">
+        {value}
+      </div>
+
+      <div
+        className={`h-1 rounded-full mt-4 ${color}`}
+      />
+    </div>
+  );
+}
+

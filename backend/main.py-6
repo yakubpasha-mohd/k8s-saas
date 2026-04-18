@@ -1,0 +1,565 @@
+# ==========================================================
+# FINAL HARDENED main.py v3
+# REAL-TIME LIVE LOG STREAMING (SSE)
+# Calico + Health Checks + Better Visibility
+# ==========================================================
+
+import time
+import uuid
+import queue
+import threading
+import subprocess
+from typing import List, Dict
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+from aws import create_instance
+
+app = FastAPI(title="K8s SaaS Live Streaming API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+KEY_PATH = "/app/key.pem"
+SSH_USER = "ec2-user"
+
+# ==========================================================
+# MEMORY JOB STORE
+# ==========================================================
+jobs: Dict[str, dict] = {}
+streams: Dict[str, queue.Queue] = {}
+
+# ==========================================================
+# MODELS
+# ==========================================================
+class ClusterRequest(BaseModel):
+    clusterName: str
+    workers: int
+    instanceType: str
+    region: str
+    k8sVersion: str
+    deployApp: bool = False
+
+
+# ==========================================================
+# HELPERS
+# ==========================================================
+def run(cmd):
+    return subprocess.run(
+        cmd,
+        shell=True,
+        capture_output=True,
+        text=True
+    )
+
+
+def ssh(ip, cmd):
+    full = f'''
+ssh -o StrictHostKeyChecking=no \
+-o UserKnownHostsFile=/dev/null \
+-i {KEY_PATH} {SSH_USER}@{ip} "{cmd}"
+'''
+    return run(full)
+
+# ----------------------------------------------------------
+# STANDARD SYSADMIN TIMESTAMP LOG FORMAT
+# Example:
+# 2026-04-18 11:22:04 🚀 Creating master instance
+# 2026-04-18 11:22:18 [54.x.x.x] $ sudo yum update -y
+# ----------------------------------------------------------
+def log(job_id, msg):
+    ts = datetime.now().strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    line = f"{ts} {msg}"
+
+    jobs[job_id]["logs"].append(line)
+    streams[job_id].put(line)
+
+
+# ----------------------------------------------------------
+# STREAM COMMAND OUTPUT LIVE WITH TIMESTAMP
+# ----------------------------------------------------------
+def run_stream(job_id, cmd, host=None):
+    proc = subprocess.Popen(
+        cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1
+    )
+
+    for line in proc.stdout:
+        line = line.rstrip()
+
+        if line:
+            if host:
+                log(
+                    job_id,
+                    f"[{host}] {line}"
+                )
+            else:
+                log(
+                    job_id,
+                    line
+                )
+
+    proc.wait()
+    return proc.returncode
+
+
+# ----------------------------------------------------------
+# WAIT FOR SSH WITH LIVE STATUS
+# ----------------------------------------------------------
+def wait_for_ssh(ip, job_id=None):
+    for i in range(30):
+        r = ssh(ip, "echo ok")
+
+        if r.returncode == 0:
+            if job_id:
+                log(
+                    job_id,
+                    f"[{ip}] SSH ready"
+                )
+            return True
+
+        if job_id:
+            log(
+                job_id,
+                f"[{ip}] waiting for SSH... attempt {i+1}/30"
+            )
+
+        time.sleep(10)
+
+    if job_id:
+        log(
+            job_id,
+            f"[{ip}] SSH timeout"
+        )
+
+    return False
+
+# ==========================================================
+# INSTALL K8S
+# ==========================================================
+def install_k8s(job_id, ip, version):
+    log(job_id, f"📦 Installing Kubernetes on {ip}")
+
+    cmds = [
+        "sudo swapoff -a",
+        "sudo sed -i '/swap/d' /etc/fstab || true",
+
+        "sudo yum clean all",
+        "sudo yum makecache",
+
+        "sudo yum update -y",
+        "sudo yum install -y docker curl conntrack socat",
+
+        "sudo systemctl enable docker",
+        "sudo systemctl restart docker",
+
+        "sudo modprobe overlay",
+        "sudo modprobe br_netfilter",
+
+        "echo 1 | sudo tee /proc/sys/net/bridge/bridge-nf-call-iptables",
+        "echo 1 | sudo tee /proc/sys/net/ipv4/ip_forward",
+        "echo 1 | sudo tee /proc/sys/net/bridge/bridge-nf-call-ip6tables",
+
+        """cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-iptables=1
+net.bridge.bridge-nf-call-ip6tables=1
+net.ipv4.ip_forward=1
+EOF""",
+
+        "sudo sysctl --system",
+
+        f"""cat <<EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
+[kubernetes]
+name=Kubernetes
+baseurl=https://pkgs.k8s.io/core:/stable:/v{version}/rpm/
+enabled=1
+gpgcheck=0
+exclude=kubelet kubeadm kubectl
+EOF""",
+
+        "sudo yum install -y kubelet kubeadm kubectl --disableexcludes=kubernetes",
+
+        "sudo systemctl daemon-reload",
+        "sudo systemctl enable kubelet",
+        "sudo systemctl restart kubelet",
+    ]
+
+    for cmd in cmds:
+        log(job_id, f"[{ip}] $ {cmd}")
+
+        rc = run_stream(
+            job_id,
+            ssh_cmd(ip, cmd),
+            ip
+        )
+
+        if rc == 0:
+            log(job_id, f"[{ip}] ✔ success")
+        else:
+            log(job_id, f"[{ip}] ✖ failed")
+            raise Exception(
+                f"Install failed on {ip}"
+            )
+
+
+# ==========================================================
+# INIT MASTER
+# ==========================================================
+def init_master(job_id, ip):
+    log(job_id, "⚙️ Initializing control-plane")
+
+    cmds = [
+        "sudo kubeadm config images pull",
+
+        "sudo kubeadm init "
+        "--pod-network-cidr=192.168.0.0/16 "
+        "--ignore-preflight-errors=NumCPU",
+
+        "mkdir -p /home/ec2-user/.kube",
+
+        "sudo cp /etc/kubernetes/admin.conf /home/ec2-user/.kube/config",
+
+        "sudo chown -R ec2-user:ec2-user /home/ec2-user/.kube",
+
+        "kubectl get nodes",
+
+        "kubectl apply -f "
+        "https://raw.githubusercontent.com/projectcalico/calico/v3.28.1/manifests/calico.yaml",
+
+        "kubectl rollout status ds/calico-node -n kube-system --timeout=300s",
+
+        "kubectl rollout status deploy/calico-kube-controllers -n kube-system --timeout=300s",
+
+        "kubectl get pods -A",
+
+        "kubeadm token create --print-join-command",
+    ]
+
+    join_cmd = None
+
+    for cmd in cmds:
+        log(job_id, f"[{ip}] $ {cmd}")
+
+        result = ssh(ip, cmd)
+
+        if result.stdout:
+            for line in result.stdout.splitlines():
+                log(job_id, f"[{ip}] {line}")
+
+                if "kubeadm join" in line:
+                    join_cmd = line.strip()
+
+        if result.stderr:
+            for line in result.stderr.splitlines():
+                log(job_id, f"[{ip}] {line}")
+
+        if result.returncode == 0:
+            log(job_id, f"[{ip}] ✔ success")
+        else:
+            log(job_id, f"[{ip}] ✖ failed")
+            raise Exception(
+                "Master initialization failed"
+            )
+
+    if not join_cmd:
+        raise Exception(
+            "Join command not found"
+        )
+
+    log(job_id, "✅ Control-plane ready")
+
+    return join_cmd
+
+
+# ==========================================================
+# JOIN WORKER
+# ==========================================================
+def join_worker(job_id, ip, join_cmd):
+    log(job_id, f"🔗 Joining worker {ip}")
+
+    cmd = f"sudo {join_cmd}"
+
+    log(job_id, f"[{ip}] $ {cmd}")
+
+    rc = run_stream(
+        job_id,
+        ssh_cmd(ip, cmd),
+        ip
+    )
+
+    if rc == 0:
+        log(job_id, f"[{ip}] ✔ joined successfully")
+    else:
+        log(job_id, f"[{ip}] ✖ join failed")
+        raise Exception(
+            f"Worker join failed: {ip}"
+        )
+
+# ==========================================================
+# HEALTH CHECKS
+# ==========================================================
+def nodes_ready(ip, expected):
+    for _ in range(60):
+        r = ssh(
+            ip,
+            "kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes --no-headers"
+        )
+
+        if r.returncode == 0:
+            lines = [
+                x for x in r.stdout.splitlines()
+                if x.strip()
+            ]
+
+            ready = 0
+
+            for line in lines:
+                if " Ready " in f" {line} ":
+                    ready += 1
+
+            if ready >= expected:
+                return True
+
+        time.sleep(10)
+
+    return False
+
+
+def calico_ready(ip):
+    for _ in range(60):
+        r = ssh(
+            ip,
+            "kubectl --kubeconfig=/etc/kubernetes/admin.conf get pods -A --no-headers"
+        )
+
+        txt = r.stdout
+
+        if (
+            "calico-node" in txt and
+            "Running" in txt and
+            "coredns" in txt
+        ):
+            return True
+
+        time.sleep(10)
+
+    return False
+
+
+# ==========================================================
+# BACKGROUND JOB
+# ==========================================================
+def provision_cluster(job_id, req):
+    try:
+        jobs[job_id]["status"] = "running"
+
+        log(job_id, "🚀 Creating master instance...")
+
+        master = create_instance(
+            req.instanceType,
+            f"{req.clusterName}-master",
+            req.region
+        )
+
+        master_ip = master["public_ip"]
+
+        log(job_id, f"Master IP: {master_ip}")
+
+        workers = []
+
+        for i in range(req.workers):
+            log(job_id, f"🚀 Creating worker-{i+1}...")
+
+            worker = create_instance(
+                req.instanceType,
+                f"{req.clusterName}-worker-{i+1}",
+                req.region
+            )
+
+            workers.append(worker)
+
+            log(
+                job_id,
+                f"Worker-{i+1}: {worker['public_ip']}"
+            )
+
+        log(job_id, "⏳ Waiting for SSH...")
+
+        wait_for_ssh(master_ip)
+
+        for w in workers:
+            wait_for_ssh(w["public_ip"])
+
+        log(job_id, "📦 Installing Kubernetes on master...")
+        install_k8s(master_ip, req.k8sVersion)
+
+        log(job_id, "⚙️ Initializing control-plane...")
+        r = init_master(master_ip)
+
+        join_cmd = ""
+
+        for line in r.stdout.splitlines():
+            if "kubeadm join" in line:
+                join_cmd = line.strip()
+
+        if not join_cmd:
+            raise Exception("Join command not found")
+
+        log(job_id, "📦 Installing Kubernetes on workers...")
+
+        for i, w in enumerate(workers):
+            install_k8s(
+                w["public_ip"],
+                req.k8sVersion
+            )
+
+            log(job_id, f"🔗 Joining worker-{i+1}")
+            join_worker(
+                w["public_ip"],
+                join_cmd
+            )
+
+        log(job_id, "🩺 Waiting for nodes Ready...")
+
+        if not nodes_ready(
+            master_ip,
+            req.workers + 1
+        ):
+            raise Exception("Nodes not Ready")
+
+        log(job_id, "🩺 Waiting for Calico networking...")
+
+        if not calico_ready(master_ip):
+            raise Exception("Calico not Ready")
+
+        log(job_id, "✅ Cluster Ready")
+
+        jobs[job_id]["status"] = "completed"
+        jobs[job_id]["master_ip"] = master_ip
+
+    except Exception as e:
+        log(job_id, f"❌ ERROR: {str(e)}")
+        jobs[job_id]["status"] = "failed"
+
+
+# ==========================================================
+# CREATE CLUSTER
+# ==========================================================
+@app.post("/create-cluster")
+def create_cluster(req: ClusterRequest):
+    job_id = str(uuid.uuid4())
+
+    jobs[job_id] = {
+        "status": "queued",
+        "logs": []
+    }
+
+    streams[job_id] = queue.Queue()
+
+    t = threading.Thread(
+        target=provision_cluster,
+        args=(job_id, req),
+        daemon=True
+    )
+    t.start()
+
+    return {
+        "status": "started",
+        "jobId": job_id
+    }
+
+
+# ==========================================================
+# JOB STATUS
+# ==========================================================
+@app.get("/jobs/{job_id}")
+def get_job(job_id: str):
+    return jobs.get(job_id, {})
+
+
+# ==========================================================
+# LIVE LOG STREAM
+# ==========================================================
+@app.get("/jobs/{job_id}/stream")
+def stream_logs(job_id: str):
+
+    if job_id not in streams:
+        return {"error": "job not found"}
+
+    def event_stream():
+        q = streams[job_id]
+
+        while True:
+            try:
+                msg = q.get(timeout=2)
+
+                yield f"data: {msg}\n\n"
+
+                if "Cluster Ready" in msg:
+                    break
+
+                if "ERROR" in msg:
+                    break
+
+            except queue.Empty:
+                # keep connection alive
+                yield ": ping\n\n"
+
+                if jobs[job_id]["status"] in [
+                    "completed",
+                    "failed"
+                ]:
+                    break
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+# ==========================================================
+# STATUS API
+# ==========================================================
+@app.get("/cluster-status/{ip}")
+def cluster_status(ip: str):
+    r1 = ssh(
+        ip,
+        "kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes"
+    )
+
+    r2 = ssh(
+        ip,
+        "kubectl --kubeconfig=/etc/kubernetes/admin.conf get pods -A"
+    )
+
+    return {
+        "nodes": r1.stdout,
+        "pods": r2.stdout
+    }
+
+
+# ==========================================================
+# HEALTH
+# ==========================================================
+@app.get("/health")
+def health():
+    return {"status": "healthy"}

@@ -1,0 +1,466 @@
+import { useState } from "react";
+
+const API =
+  import.meta.env.VITE_API_URL ||
+  `${window.location.protocol}//${window.location.hostname}:8000`;
+
+export default function App() {
+  const [loading, setLoading] =
+    useState(false);
+
+  const [logs, setLogs] =
+    useState("");
+
+  const [jobStatus, setJobStatus] =
+    useState("idle");
+
+  const [primary, setPrimary] =
+    useState(null);
+
+  const [standby, setStandby] =
+    useState(null);
+
+  const [form, setForm] =
+    useState({
+      clusterName: "",
+      workers: 1,
+      instanceType:
+        "t2.medium",
+      region: "us-east-1",
+      standbyRegion:
+        "us-east-2",
+      k8sVersion:
+        "1.29",
+    });
+
+  const card =
+    "bg-white border border-slate-200";
+  const input =
+    "bg-white border border-slate-300";
+
+  // ===================================
+  // HANDLE FORM
+  // ===================================
+  const handleChange = (
+    e
+  ) => {
+    const {
+      name,
+      value,
+    } = e.target;
+
+    setForm({
+      ...form,
+      [name]:
+        name ===
+        "workers"
+          ? Number(
+              value
+            )
+          : value,
+    });
+  };
+
+  // ===================================
+  // LIVE LOG STREAM
+  // ===================================
+  const startLogs = (
+    jobId
+  ) => {
+    const evt =
+      new EventSource(
+        `${API}/jobs/${jobId}/stream`
+      );
+
+    evt.onmessage = (
+      e
+    ) => {
+      setLogs(
+        (
+          prev
+        ) =>
+          prev +
+          e.data +
+          "\n"
+      );
+
+      // progress updates
+      if (
+        e.data.includes(
+          "Creating master"
+        )
+      ) {
+        setJobStatus(
+          "creating"
+        );
+      }
+
+      if (
+        e.data.includes(
+          "Installing Kubernetes"
+        )
+      ) {
+        setJobStatus(
+          "installing"
+        );
+      }
+
+      if (
+        e.data.includes(
+          "Joining worker"
+        )
+      ) {
+        setJobStatus(
+          "joining"
+        );
+      }
+
+      if (
+        e.data.includes(
+          "Cluster Ready"
+        )
+      ) {
+        setJobStatus(
+          "completed"
+        );
+        setLoading(
+          false
+        );
+        evt.close();
+      }
+
+      if (
+        e.data.includes(
+          "ERROR"
+        )
+      ) {
+        setJobStatus(
+          "failed"
+        );
+        setLoading(
+          false
+        );
+        evt.close();
+      }
+    };
+
+    evt.onerror = () => {
+      evt.close();
+      setLoading(
+        false
+      );
+    };
+  };
+
+  // ===================================
+  // CREATE CLUSTER
+  // ===================================
+  const createCluster =
+    async () => {
+      setLoading(true);
+      setLogs("");
+      setJobStatus(
+        "starting"
+      );
+
+      setPrimary({
+        region:
+          form.region,
+        status:
+          "Provisioning",
+      });
+
+      setStandby({
+        region:
+          form
+            .standbyRegion,
+        status:
+          "Standby",
+      });
+
+      try {
+        const res =
+          await fetch(
+            `${API}/create-cluster`,
+            {
+              method:
+                "POST",
+              headers:
+                {
+                  "Content-Type":
+                    "application/json",
+                },
+              body: JSON.stringify(
+                {
+                  clusterName:
+                    form.clusterName,
+                  workers:
+                    Number(
+                      form.workers
+                    ),
+                  instanceType:
+                    form.instanceType,
+                  region:
+                    form.region,
+                  k8sVersion:
+                    form.k8sVersion,
+                  deployApp:
+                    false,
+                }
+              ),
+            }
+          );
+
+        const data =
+          await res.json();
+
+        if (
+          data.jobId
+        ) {
+          startLogs(
+            data.jobId
+          );
+        } else {
+          setLogs(
+            JSON.stringify(
+              data,
+              null,
+              2
+            )
+          );
+          setLoading(
+            false
+          );
+        }
+      } catch (
+        err
+      ) {
+        setLogs(
+          "❌ " +
+            err.message
+        );
+        setLoading(
+          false
+        );
+      }
+    };
+
+  const progressWidth =
+    loading
+      ? "w-2/3"
+      : jobStatus ===
+        "completed"
+      ? "w-full"
+      : "w-0";
+
+  const progressColor =
+    jobStatus ===
+    "completed"
+      ? "bg-green-600"
+      : jobStatus ===
+        "failed"
+      ? "bg-red-600"
+      : "bg-blue-600";
+
+  const progressText =
+    loading
+      ? "Provisioning in progress..."
+      : jobStatus ===
+        "completed"
+      ? "Cluster Ready"
+      : jobStatus ===
+        "failed"
+      ? "Failed"
+      : "Idle";
+
+  return (
+    <div className="min-h-screen bg-slate-100 p-6">
+      <div className="max-w-6xl mx-auto space-y-6">
+
+        {/* HERO */}
+        <div
+          className={`rounded-2xl p-6 ${card}`}
+        >
+          <h1 className="text-3xl font-bold">
+            🚀 Premium Cluster Dashboard
+          </h1>
+          <p className="text-sm text-slate-500 mt-2">
+            Real-time Kubernetes provisioning with live logs
+          </p>
+        </div>
+
+        {/* FORM */}
+        <div
+          className={`rounded-2xl p-6 grid md:grid-cols-2 gap-4 ${card}`}
+        >
+          <input
+            name="clusterName"
+            placeholder="Cluster Name"
+            onChange={
+              handleChange
+            }
+            className={`rounded-xl px-4 py-3 ${input}`}
+          />
+
+          <input
+            name="workers"
+            type="number"
+            value={
+              form.workers
+            }
+            onChange={
+              handleChange
+            }
+            className={`rounded-xl px-4 py-3 ${input}`}
+          />
+
+          <select
+            name="instanceType"
+            onChange={
+              handleChange
+            }
+            className={`rounded-xl px-4 py-3 ${input}`}
+          >
+            <option>
+              t2.medium
+            </option>
+            <option>
+              t3.medium
+            </option>
+          </select>
+
+          <select
+            name="region"
+            onChange={
+              handleChange
+            }
+            className={`rounded-xl px-4 py-3 ${input}`}
+          >
+            <option>
+              us-east-1
+            </option>
+            <option>
+              us-east-2
+            </option>
+          </select>
+
+          <select
+            name="standbyRegion"
+            onChange={
+              handleChange
+            }
+            className={`rounded-xl px-4 py-3 ${input}`}
+          >
+            <option>
+              us-east-2
+            </option>
+            <option>
+              us-west-2
+            </option>
+          </select>
+
+          <button
+            onClick={
+              createCluster
+            }
+            disabled={
+              loading
+            }
+            className="rounded-xl bg-blue-600 text-white py-3 hover:bg-blue-700"
+          >
+            {loading
+              ? "⏳ Processing..."
+              : "🚀 Create Cluster"}
+          </button>
+        </div>
+
+        {/* STATUS */}
+        {(primary ||
+          standby) && (
+          <div className="grid md:grid-cols-2 gap-4">
+            {primary && (
+              <Card
+                title="Primary Cluster"
+                value={
+                  primary.region
+                }
+                status={
+                  loading
+                    ? "Provisioning"
+                    : "Ready"
+                }
+              />
+            )}
+
+            {standby && (
+              <Card
+                title="Standby Cluster"
+                value={
+                  standby.region
+                }
+                status="Standby"
+              />
+            )}
+          </div>
+        )}
+
+        {/* PROGRESS */}
+        <div
+          className={`rounded-2xl p-6 ${card}`}
+        >
+          <h3 className="font-semibold text-lg">
+            Deployment Status
+          </h3>
+
+          <div className="mt-4">
+            <div className="h-3 bg-slate-300 rounded-full overflow-hidden">
+              <div
+                className={`h-full ${progressWidth} ${progressColor} transition-all duration-700`}
+              />
+            </div>
+
+            <p className="mt-2 text-sm text-slate-500">
+              {progressText}
+            </p>
+          </div>
+        </div>
+
+        {/* LIVE LOGS */}
+        <div
+          className={`rounded-2xl p-6 ${card}`}
+        >
+          <h3 className="text-xl font-semibold mb-4">
+            📜 Live Logs
+          </h3>
+
+          <pre className="bg-black text-green-400 rounded-xl p-4 h-96 overflow-auto text-sm whitespace-pre-wrap">
+            {logs ||
+              "Waiting for deployment..."}
+          </pre>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Card({
+  title,
+  value,
+  status,
+}) {
+  return (
+    <div className="rounded-2xl bg-white border border-slate-200 p-6">
+      <h3 className="text-xl font-semibold">
+        {title}
+      </h3>
+
+      <p className="mt-3">
+        Region: {value}
+      </p>
+
+      <p className="mt-1">
+        Status: {status}
+      </p>
+    </div>
+  );
+}
