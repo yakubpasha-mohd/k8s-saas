@@ -1,0 +1,133 @@
+import boto3
+
+
+def get_latest_ami(region):
+    ec2 = boto3.client(
+        "ec2",
+        region_name=region
+    )
+
+    images = ec2.describe_images(
+        Owners=["amazon"],
+        Filters=[
+            {
+                "Name": "name",
+                "Values": [
+                    "amzn2-ami-hvm-*"
+                ],
+            },
+            {
+                "Name": "architecture",
+                "Values": [
+                    "x86_64"
+                ],
+            },
+            {
+                "Name": "state",
+                "Values": [
+                    "available"
+                ],
+            },
+        ],
+    )
+
+    images_sorted = sorted(
+        images["Images"],
+        key=lambda x: x[
+            "CreationDate"
+        ],
+        reverse=True,
+    )
+
+    return images_sorted[0][
+        "ImageId"
+    ]
+
+
+def get_default_vpc_resources(region):
+    ec2 = boto3.client(
+        "ec2",
+        region_name=region
+    )
+
+    # default subnet
+    subnets = ec2.describe_subnets(
+        Filters=[
+            {
+                "Name": "default-for-az",
+                "Values": ["true"],
+            }
+        ]
+    )
+
+    subnet_id = subnets[
+        "Subnets"
+    ][0]["SubnetId"]
+
+    # default security group
+    sgs = ec2.describe_security_groups(
+        Filters=[
+            {
+                "Name": "group-name",
+                "Values": ["default"],
+            }
+        ]
+    )
+
+    sg_id = sgs[
+        "SecurityGroups"
+    ][0]["GroupId"]
+
+    return subnet_id, sg_id
+
+
+def create_instance(
+    instance_type,
+    name,
+    region
+):
+    ec2 = boto3.resource(
+        "ec2",
+        region_name=region
+    )
+
+    ami_id = get_latest_ami(
+        region
+    )
+
+    subnet_id, sg_id = (
+        get_default_vpc_resources(
+            region
+        )
+    )
+
+    instances = ec2.create_instances(
+        ImageId=ami_id,
+        MinCount=1,
+        MaxCount=1,
+        InstanceType=instance_type,
+        KeyName="aws-ue-east1-keys",  # replace if needed per region
+        SecurityGroupIds=[sg_id],
+        SubnetId=subnet_id,
+        TagSpecifications=[
+            {
+                "ResourceType": "instance",
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": name,
+                    }
+                ],
+            }
+        ],
+    )
+
+    instance = instances[0]
+
+    instance.wait_until_running()
+    instance.reload()
+
+    return {
+        "id": instance.id,
+        "public_ip": instance.public_ip_address,
+    }
