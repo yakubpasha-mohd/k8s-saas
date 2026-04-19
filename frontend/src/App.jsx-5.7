@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+
 const API =
   import.meta.env.VITE_API_URL ||
   "http://34.204.82.138:8000";
@@ -41,7 +41,7 @@ export default function App() {
 
   const [masterIp, setMasterIp] =
     useState("");
-  const [openMenu, setOpenMenu] = useState(null);
+
   const streamRef = useRef(null);
   const pollRef = useRef(null);
   const logRef = useRef(null);
@@ -552,96 +552,58 @@ ${data.pods}
     >
       <div className="flex">
 
-        
-	  {/* SIDEBAR */}
-	   <aside
-        className={`hidden lg:flex w-72 min-h-screen border-r p-6 flex-col gap-6 ${card}`}
-      >
-        {/* Logo / Title */}
-        <div>
-          <h1 className="text-2xl font-bold">
-            ☸ K8s SaaS
-          </h1>
-
-          <p className="text-sm opacity-70">
-            Enterprise Platform
-          </p>
-        </div>
-
-        {/* Navigation */}
-        <nav className="space-y-2">
-
-          {[
-            {
-              title: "Dashboard",
-              sub: ["Overview", "Analytics"],
-            },
-            {
-              title: "Clusters",
-              sub: ["Active Clusters", "Node Pools", "Scaling"],
-            },
-            {
-              title: "Logs",
-              sub: ["System Logs", "Audit Logs"],
-            },
-            {
-              title: "Monitoring",
-              sub: ["Metrics", "Alerts"],
-            },
-            {
-              title: "Settings",
-              sub: ["Profile", "Billing", "Security"],
-            },
-          ].map((item) => {
-            const isOpen = openMenu === item.title;
-
-            return (
-              <div key={item.title}>
-                {/* Main Menu */}
-                <button
-                  onClick={() =>
-                    setOpenMenu(
-                      isOpen ? null : item.title
-                    )
-                  }
-                  className="w-full flex items-center justify-between p-3 rounded-xl hover:bg-blue-600 hover:text-white cursor-pointer font-medium transition"
-                >
-                  <span>{item.title}</span>
-
-                  {isOpen ? (
-                    <ChevronDown size={18} />
-                  ) : (
-                    <ChevronRight size={18} />
-                  )}
-                </button>
-
-                {/* Dropdown */}
-                {isOpen && (
-                  <div className="ml-4 mt-1 space-y-1 border-l pl-4">
-                    {item.sub.map((sub) => (
-                      <div
-                        key={sub}
-                        className="p-2 rounded-lg text-sm opacity-80 hover:bg-blue-500 hover:text-white cursor-pointer transition"
-                      >
-                        {sub}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-        </nav>
-
-        {/* Theme Toggle */}
-        <button
-          onClick={() => setDark(!dark)}
-          className="mt-auto py-3 rounded-xl bg-slate-700 text-white hover:bg-slate-800 transition"
+        {/* SIDEBAR */}
+        <aside
+          className={`hidden lg:flex w-72 min-h-screen border-r p-6 flex-col gap-6 ${card}`}
         >
-          {dark ? "☀ Light" : "🌙 Dark"}
-        </button>
-      </aside>
+          <div>
+            <h1 className="text-2xl font-bold">
+              ☸ K8s SaaS
+            </h1>
+
+            <p className="text-sm opacity-70">
+              Enterprise Platform
+            </p>
+          </div>
+
+          <nav className="space-y-2">
+            {[
+              "Dashboard",
+              "Clusters",
+              "Logs",
+              "Monitoring",
+              "Settings",
+            ].map(
+              (
+                item
+              ) => (
+                <div
+                  key={
+                    item
+                  }
+                  className="p-3 rounded-xl hover:bg-blue-600 hover:text-white cursor-pointer"
+                >
+                  {
+                    item
+                  }
+                </div>
+              )
+            )}
+          </nav>
+
+          <button
+            onClick={() =>
+              setDark(
+                !dark
+              )
+            }
+            className="mt-auto py-3 rounded-xl bg-slate-700 text-white"
+          >
+            {dark
+              ? "☀ Light"
+              : "🌙 Dark"}
+          </button>
+        </aside>
 
         {/* MAIN */}
         <main className="flex-1 p-6 space-y-6">
