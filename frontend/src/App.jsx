@@ -242,76 +242,63 @@ export default function App() {
   // =====================================================
   // MULTI REGION
   // =====================================================
-  const createMultiRegion =
-    async () => {
-      resetJob();
+const createMultiRegion = async () => {
+  resetJob();
+  setLoading(true);
 
-      try {
-        const res =
-          await fetch(
-            `${API}/create-multi-region`,
-            {
-              method:
-                "POST",
-              headers: {
-                "Content-Type":
-                  "application/json",
-              },
-              body: JSON.stringify(
-                {
-                  clusterName:
-                    form.clusterName,
-                  workers:
-                    Number(
-                      form.workers
-                    ),
-                  instanceType:
-                    form.instanceType,
-                  regions:
-                    selectedRegions,
-                }
-              ),
-            }
-          );
-
-        const data =
-          await res.json();
-
-        if (
-          data.jobId
-        ) {
-          setJobId(
-            data.jobId
-          );
-
-          startPolling(
-            data.jobId
-          );
-
-          startLogs(
-            data.jobId
-          );
-        } else {
-          setLogs(
-            "❌ Failed to start job"
-          );
-
-          setLoading(
-            false
-          );
-        }
-      } catch (e) {
-        setLogs(
-          "❌ " +
-            e.message
-        );
-
-        setLoading(
-          false
-        );
-      }
+  try {
+    const payload = {
+      clusterName: form.clusterName,
+      workers: Number(form.workers),
+      instanceType: form.instanceType,
+      regions: selectedRegions,
+      k8sVersion: form.k8sVersion || "1.29",
     };
 
+    console.log("Multi-region payload:", payload);
+
+    const res = await fetch(
+      `${API}/create-multi-region`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
+        body: JSON.stringify(
+          payload
+        ),
+      }
+    );
+
+    const data =
+      await res.json();
+
+    if (data.jobId) {
+      setJobId(data.jobId);
+
+      startPolling(
+        data.jobId
+      );
+
+      startLogs(
+        data.jobId
+      );
+    } else {
+      setLogs(
+        "❌ Failed to start job"
+      );
+
+      setLoading(false);
+    }
+  } catch (e) {
+    setLogs(
+      "❌ " + e.message
+    );
+
+    setLoading(false);
+  }
+};
   // =====================================================
   // POLLING
   // =====================================================
@@ -393,82 +380,79 @@ export default function App() {
   // =====================================================
   // LIVE LOGS
   // =====================================================
-  const startLogs = (
-    id
-  ) => {
-    if (
-      streamRef.current
-    ) {
-      streamRef.current.close();
-    }
+const startLogs = (id) => {
+  if (streamRef.current) {
+    streamRef.current.close();
+  }
 
-    const es =
-      new EventSource(
-        `${API}/jobs/${id}/stream`
-      );
+  const es = new EventSource(
+    `${API}/jobs/${id}/stream`
+  );
 
-    es.onopen = () => {
-      setLogs(
-        "Connected to live stream...\n"
-      );
-    };
-
-    es.onmessage = (
-      event
-    ) => {
-      const line =
-        event.data?.trim();
-
-      if (!line) return;
-
-      setLogs(
-        (prev) =>
-          prev +
-          line +
-          "\n"
-      );
-
-      if (
-        line.includes(
-          "Cluster Ready"
-        )
-      ) {
-        setLoading(
-          false
-        );
-
-        setJobStatus(
-          "completed"
-        );
-
-        es.close();
-      }
-
-      if (
-        line.includes(
-          "ERROR"
-        )
-      ) {
-        setLoading(
-          false
-        );
-
-        setJobStatus(
-          "failed"
-        );
-
-        es.close();
-      }
-    };
-
-    es.onerror = () => {
-      es.close();
-    };
-
-    streamRef.current =
-      es;
+  es.onopen = () => {
+    setLogs(
+      "Connected to live stream...\n"
+    );
   };
 
+  es.onmessage = (event) => {
+    const line =
+      event.data?.trim();
+
+    if (!line) return;
+
+    setLogs((prev) =>
+      prev + line + "\n"
+    );
+
+    // ---------------------------------
+    // FINAL SUCCESS (single region)
+    // ---------------------------------
+    if (
+      line.includes(
+        "🎉 Single cluster deployment complete"
+      )
+    ) {
+      setLoading(false);
+      setJobStatus("completed");
+      es.close();
+      return;
+    }
+
+    // ---------------------------------
+    // FINAL SUCCESS (multi region)
+    // ---------------------------------
+    if (
+      line.includes(
+        "🌍 Multi-region deployment complete"
+      )
+    ) {
+      setLoading(false);
+      setJobStatus("completed");
+      es.close();
+      return;
+    }
+
+    // ---------------------------------
+    // FAILURE
+    // ---------------------------------
+    if (
+      line.includes("❌ ERROR") ||
+      line.includes("failed")
+    ) {
+      setLoading(false);
+      setJobStatus("failed");
+      es.close();
+      return;
+    }
+  };
+
+  es.onerror = () => {
+    es.close();
+  };
+
+  streamRef.current = es;
+};
   // =====================================================
   // ACTIONS
   // =====================================================

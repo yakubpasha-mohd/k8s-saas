@@ -612,29 +612,14 @@ def provision_multi_region(job_id, req):
                     f"[{region}] ❌ ERROR: {str(e)}"
                 )
 
-        # FINAL STATUS
         jobs[job_id]["regions"] = results
+        jobs[job_id]["status"] = "completed"
 
-        if any(
-            r["status"] == "failed"
-            for r in results.values()
-        ):
-            jobs[job_id]["status"] = "failed"
-        else:
-            jobs[job_id]["status"] = "completed"
-
-        log(
-            job_id,
-            "🌍 Multi-region deployment complete"
-        )
+        log(job_id, "🌍 Multi-region deployment complete")
 
     except Exception as e:
         jobs[job_id]["status"] = "failed"
-
-        log(
-            job_id,
-            f"❌ ERROR: {str(e)}"
-        )
+        log(job_id, f"❌ ERROR: {str(e)}")
 # ==========================================================
 # CREATE MULTI REGION
 # ==========================================================
@@ -675,31 +660,41 @@ def get_job(
 # ==========================================================
 # SSE LOG STREAM
 # ==========================================================
-# ==========================================================
-# SSE LOG STREAM
-# ==========================================================
 @app.get("/jobs/{job_id}/stream")
-def stream_logs(job_id: str):
-
+def stream_logs(
+    job_id: str
+):
     def event():
         q = streams[job_id]
 
         while True:
             try:
-                msg = q.get(timeout=2)
+                msg = q.get(
+                    timeout=2
+                )
 
                 yield f"data: {msg}\n\n"
+
+                if (
+                    "Cluster Ready"
+                    in msg
+                ):
+                    break
+
+                if (
+                    "ERROR"
+                    in msg
+                ):
+                    break
 
             except queue.Empty:
                 yield ": ping\n\n"
 
-            # close only when job really finished
-            if (
-                jobs[job_id]["status"]
-                in ["completed", "failed"]
-                and q.empty()
-            ):
-                break
+                if jobs[job_id]["status"] in [
+                    "completed",
+                    "failed"
+                ]:
+                    break
 
     return StreamingResponse(
         event(),
@@ -710,6 +705,7 @@ def stream_logs(job_id: str):
             "X-Accel-Buffering": "no",
         },
     )
+
 
 # ==========================================================
 # HEALTH
